@@ -11,6 +11,7 @@ from torch import nn
 
 import os
 import zipfile
+import tempfile
 
 from pathlib import Path
 
@@ -257,6 +258,9 @@ def download_data(source: str,
         destination (str): A target directory to unzip data to.
         remove_source (bool): Whether to remove the source after downloading and extracting.
     
+    The destination is created only after the complete archive is extracted,
+    so failed downloads or extraction attempts can be retried.
+
     Returns:
         pathlib.Path to downloaded data.
     
@@ -272,20 +276,24 @@ def download_data(source: str,
     if image_path.is_dir():
         print(f"[INFO] {image_path} directory exists, skipping download.")
     else:
-        print(f"[INFO] Did not find {image_path} directory, creating one...")
-        image_path.mkdir(parents=True, exist_ok=True)
-        
-        # Download pizza, steak, sushi data
-        target_file = Path(source).name
-        with open(data_path / target_file, "wb") as f:
-            request = requests.get(source)
-            print(f"[INFO] Downloading {target_file} from {source}...")
-            f.write(request.content)
+        print(f"[INFO] Did not find {image_path} directory, preparing data...")
+        image_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Unzip pizza, steak, sushi data
+        # Check the HTTP response before saving the archive.
+        target_file = Path(source).name
+        with requests.get(source, timeout=30) as request:
+            request.raise_for_status()
+            print(f"[INFO] Downloading {target_file} from {source}...")
+            with open(data_path / target_file, "wb") as f:
+                f.write(request.content)
+
+        # Publish the destination only after extraction succeeds. A temporary
+        # sibling directory keeps failed attempts from being treated as complete.
         with zipfile.ZipFile(data_path / target_file, "r") as zip_ref:
-            print(f"[INFO] Unzipping {target_file} data...") 
-            zip_ref.extractall(image_path)
+            print(f"[INFO] Unzipping {target_file} data...")
+            with tempfile.TemporaryDirectory(dir=image_path.parent) as temporary_dir:
+                zip_ref.extractall(temporary_dir)
+                Path(temporary_dir).rename(image_path)
 
         # Remove .zip file
         if remove_source:
